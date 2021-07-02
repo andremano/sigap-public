@@ -3,3 +3,5 @@ Scripts for implementing a spatial database to manage paleontological collection
 The database is the core component of a Spatial Data Infrastructure to support palaeontological research of Sociedade de Historia Natural (Torres Vedras, Portugal) > www.shn.pt
 
 The script implements the class diagram reproduced below include codelists, sequences, views and triggers. The spatial database used to manage SHN paleontological collections is an ongoing process - it is possible both the diagram and the script are updated in the future.
+
+![db_class_diagram](https://user-images.githubusercontent.com/6665872/124335113-7dae8280-db99-11eb-9581-ce357e296c94.png)
