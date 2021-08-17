@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/382472519.svg)](https://zenodo.org/badge/latestdoi/382472519)
+
 
 Scripts for implementing a spatial database to manage paleontological collections are shared in this space under a permissive MIT license. 
 The database is the core component of a Spatial Data Infrastructure to support palaeontological research of Sociedade de Historia Natural (Torres Vedras, Portugal) > www.shn.pt
