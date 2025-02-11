@@ -3,7 +3,6 @@ Last updated 03-july-2021 by Andre Mano
 Departamento de Informacao Geografica da Sociedade de Historia Natural de Torres Vedras |i.geografica@alt-shn.org
 */
 
-
 /* 
 use this dummy point to help test spatial triggers
 
@@ -210,7 +209,7 @@ CREATE TABLE lista_acronimos (
 CREATE TABLE paleositio (
      oid                  integer  DEFAULT NEXTVAL('paleositio_oid_seq')                   NOT NULL,
      acronimo             varchar(100)   UNIQUE      NOT NULL, /* paleositio a0 representa proveniencia indeterminada*/
-     acronimo_old         int            , 
+     acronimo_old         integer            , 
      geologia_oid         integer, /* */
      matriz               varchar(100),
      toponimo             varchar(100),
@@ -2274,23 +2273,28 @@ FOR EACH ROW EXECUTE PROCEDURE fotografia_history_insert();
 -- Trigger function to update the lista_acronimos table  -- CHECKED!
 ----------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION lista_acronimo_insert() RETURNS trigger AS 
-$BODY$
+CREATE OR REPLACE FUNCTION insert_into_lista_acronimos()
+RETURNS TRIGGER AS $$
 BEGIN
-		INSERT INTO lista_acronimos(acronimo)
-		VALUES (new.acronimo);
-		RETURN new;
+    -- Check if NEW.acronimo starts with 'acronimo'
+    IF LEFT(NEW.acronimo, 8) != 'acronimo' THEN
+        -- If it does not start with 'acronimo', insert it into the table
+        INSERT INTO lista_acronimos(acronimo)
+        VALUES (NEW.acronimo);
+    END IF;
+
+    -- Allow the original operation to proceed
+    RETURN NEW;
 END;
-$BODY$
-LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 CREATE TRIGGER lista_acronimos_jazida_insert
 AFTER INSERT ON jazida
-FOR EACH ROW EXECUTE PROCEDURE lista_acronimo_insert();
+FOR EACH ROW EXECUTE PROCEDURE insert_into_lista_acronimos();
 
 CREATE TRIGGER lista_acronimos_disperso_insert
 AFTER INSERT ON disperso
-FOR EACH ROW EXECUTE PROCEDURE lista_acronimo_insert();
+FOR EACH ROW EXECUTE PROCEDURE insert_into_lista_acronimos();
 
 
 												--**********************
@@ -2378,6 +2382,7 @@ FROM jazida AS j LEFT JOIN municipio AS m ON m.oid = j.municipio
 				 LEFT JOIN cmp ON cmp.nfolha = j.folha_cmp
 				 LEFT JOIN geologia as g on g.oid = j.geologia_oid);
 	   
+	   
 ---------------------------------------------------------
 -- Jazida view for web map client for general public --
 ---------------------------------------------------------
@@ -2450,5 +2455,589 @@ FROM disperso AS d LEFT JOIN municipio_2011 AS m2011 ON m2011.oid = d.municipio_
 create view foto_webmap as (
 SELECT oid, paleositio, source_file as fotografia, image_size as dimensao, date as data
 from fotografia);
+
+
+											--***********************************************************--
+											-- OVERVIEW VIEWS TO GENERATE PLOTS IN LIZMAP OR OTHER TOOLS --
+											--***********************************************************--
+
+
+------------------------------
+-- create dedicated schemma --
+------------------------------
+
+CREATE SCHEMA lizmapviews;
+
+--------------------------
+-- jazidas by freguesia --
+--------------------------
+
+CREATE MATERIALIZED VIEW lizmapviews.jazidas_freguesia AS
+(SELECT row_number() over() as id,
+		count(j.*), 
+		m.freguesia, 
+		m.municipio
+FROM jazida AS j, municipio_2011 as m
+WHERE st_intersects(j.geom, m.geom)
+GROUP BY m.freguesia,
+		 m.municipio);
+
+
+CREATE OR REPLACE FUNCTION refresh_jazidas_freguesia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.jazidas_freguesia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER jazidas_freguesia_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazidas_freguesia_view();
+
+CREATE TRIGGER jazidas_freguesia_2
+AFTER INSERT OR UPDATE OR DELETE ON municipio_2011
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazidas_freguesia_view();
+
+
+---------------------------
+-- disperso by freguesia --
+---------------------------
+
+CREATE materialized view lizmapviews.disperso_freguesia AS
+(SELECT row_number() over() as id,
+		count(d.*), 
+		m.freguesia, 
+		m.municipio
+FROM disperso AS d, municipio_2011 as m
+WHERE st_intersects(st_centroid(d.geom), m.geom)
+GROUP BY m.freguesia,
+		 m.municipio);
+		 
+
+CREATE OR REPLACE FUNCTION refresh_disperso_freguesia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.disperso_freguesia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER disperso_freguesia_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_disperso_freguesia_view();
+
+CREATE TRIGGER disperso_freguesia_2
+AFTER INSERT OR UPDATE OR DELETE ON municipio_2011
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_disperso_freguesia_view();
+
+	
+-----------------------------
+-- paleositio by freguesia --
+-----------------------------
+
+CREATE MATERIALIZED VIEW lizmapviews.paleositio_freguesia AS
+(WITH paleositio AS
+(SELECT oid, 
+		geom
+FROM jazida
+		UNION
+SELECT 
+	oid, 
+	st_centroid(geom) as geom
+FROM disperso)
+
+SELECT row_number() over() as id,
+	   count(p.*), 
+	   m.freguesia, 
+	   m.municipio
+FROM paleositio as p, municipio_2011 as m
+WHERE st_intersects(p.geom, m.geom)
+GROUP BY m.freguesia, 
+		 m.municipio);
+		 
+		 
+CREATE OR REPLACE FUNCTION refresh_paleositio_freguesia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.paleositio_freguesia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER paleositio_freguesia_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_freguesia_view();
+
+CREATE TRIGGER paleositio_freguesia_2
+AFTER INSERT OR UPDATE OR DELETE ON municipio_2011
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_freguesia_view();
+
+
+------------------------
+-- jazida by geologia --
+------------------------
+
+CREATE materialized VIEW lizmapviews.jazidas_geologia AS
+(SELECT row_number() over() as id,
+		count(j.*), 
+		g.periodo, 
+		g.idade
+FROM jazida AS j, geologia as g
+WHERE st_intersects(j.geom, g.geom)
+GROUP BY g.periodo, 
+		 g.idade);
+
+
+CREATE OR REPLACE FUNCTION refresh_jazida_geologia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.jazidas_geologia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER jazida_geologia_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_geologia_view();
+
+CREATE TRIGGER jazida_geologia_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_geologia_view();
+
+
+---------------------------
+-- litologia by geologia --
+---------------------------		 
+		 
+CREATE materialized VIEW lizmapviews.jazidas_litologia AS
+(SELECT row_number() over() as id,
+		count(j.*), 
+		g.litologia
+FROM jazida AS j, geologia as g
+WHERE st_intersects(j.geom, g.geom)
+GROUP BY g.litologia);
+
+
+CREATE OR REPLACE FUNCTION refresh_jazidas_litologia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.jazidas_litologia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER jazida_litologia_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazidas_litologia_view();
+
+CREATE TRIGGER jazida_litologia_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazidas_litologia_view();
+
+
+--------------------------
+-- disperso by geologia --
+--------------------------
+
+CREATE materialized VIEW lizmapviews.disperso_geologia AS
+(SELECT row_number() over() as id,
+		count(d.*), 
+		g.periodo, 
+		g.idade
+FROM disperso AS d, geologia as g
+WHERE st_intersects(d.geom, g.geom)
+GROUP BY g.periodo, 
+		 g.idade);
+
+
+CREATE OR REPLACE FUNCTION refresh_disperso_geologia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.disperso_geologia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER disperso_geologia_3
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_disperso_litologia_view();
+
+CREATE TRIGGER disperso_geologia_4
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_disperso_litologia_view();
+
+
+---------------------------
+-- disperso by litologia --
+---------------------------
+		 
+CREATE materialized VIEW lizmapviews.disperso_litologia AS
+(SELECT row_number() over() as id,
+		count(d.*), 
+		g.litologia
+FROM disperso AS d, geologia as g
+WHERE st_intersects(d.geom, g.geom)
+GROUP BY g.litologia);
+
+
+CREATE OR REPLACE FUNCTION refresh_disperso_litologia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.disperso_litologia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER disperso_geologia_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_disperso_litologia_view();
+
+CREATE TRIGGER disperso_geologia_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_disperso_litologia_view();
+
+
+----------------------------
+-- paleositio by geologia --
+----------------------------
+
+CREATE MATERIALIZED VIEW lizmapviews.paleositio_geologia AS
+(WITH paleositio AS
+(SELECT oid, 
+		geom
+FROM jazida
+		UNION
+SELECT 
+	oid, 
+	st_centroid(geom) as geom
+FROM disperso)
+
+SELECT 
+    row_number() over() as id,
+	count(p.*), 
+	g.periodo, 
+	g.idade 
+FROM paleositio as p, geologia as g
+WHERE st_intersects(p.geom, g.geom)
+GROUP BY g.periodo, 
+		 g.idade);
+		 
+
+CREATE OR REPLACE FUNCTION refresh_paleositio_geologia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.paleositio_geologia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER paleositio_geologia_1
+AFTER INSERT OR UPDATE OR DELETE ON paleositio
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_geologia_view();
+
+CREATE TRIGGER paleositio_geologia_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_geologia_view();
+
+
+-----------------------------
+-- paleositio by litologia --
+-----------------------------
+
+CREATE MATERIALIZED VIEW lizmapviews.paleositio_litologia AS
+(WITH paleositio AS
+(SELECT oid, 
+		geom
+FROM jazida
+		UNION
+SELECT 
+	oid, 
+	st_centroid(geom) as geom
+FROM disperso)
+
+SELECT 
+    row_number() over() as id,
+	count(p.*),  
+	g.litologia 
+FROM paleositio as p, geologia as g
+WHERE st_intersects(p.geom, g.geom)
+GROUP BY litologia);
+
+
+CREATE OR REPLACE FUNCTION refresh_paleositio_litologia_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.paleositio_litologia;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER paleositio_litologia_1
+AFTER INSERT OR UPDATE OR DELETE ON paleositio
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_geologia_view();
+
+CREATE TRIGGER paleositio_litologia_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_geologia_view();
+
+
+---------------------------
+-- especies in paleositio -
+---------------------------
+
+Create materialized view lizmapviews.paleositio_especies as
+(with filtered as
+(select trim(s.especies) as especies, count(*)
+from paleositio AS j
+     cross join unnest(string_to_array(j.especies, ',')) AS s (especies)
+where s.especies not ilike '%;%'
+group by s.especies 
+
+union
+
+select trim(s.especies) as especies, count(*)
+from paleositio AS j
+     cross join unnest(string_to_array(j.especies, ';')) AS s (especies)
+where s.especies not ilike '%,%'
+group by s.especies)
+
+ select row_number() over() as id, sum(f.count), especies
+ from filtered as f
+ group by especies);
+
+
+CREATE OR REPLACE FUNCTION refresh_paleositio_especies_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.paleositio_especies;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER paleositio_especies
+AFTER INSERT OR UPDATE OR DELETE ON paleositio
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_especies_view();
+
+
+----------------------------
+-- vestigios in paleositio -
+----------------------------
+
+
+Create materialized view lizmapviews.paleositio_vestigios as
+(with filtered as
+(select trim(s.vestigios) as vestigios, count(*)
+from paleositio AS j
+     cross join unnest(string_to_array(j.vestigios, ',')) AS s (vestigios)
+where s.vestigios not ilike '%;%'
+group by s.vestigios 
+
+union
+
+select trim(s.vestigios) as especies, count(*)
+from paleositio AS j
+     cross join unnest(string_to_array(j.vestigios, ';')) AS s (vestigios)
+where s.vestigios not ilike '%,%'
+group by s.vestigios)
+
+ select row_number() over() as id, sum(f.count), vestigios
+ from filtered as f
+ where vestigios is not null or vestigios =''
+ group by vestigios);
+ 
+ CREATE OR REPLACE FUNCTION refresh_paleositio_vestigios_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW lizmapviews.paleositio_vestigios;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER paleositio_vestigios
+AFTER INSERT OR UPDATE OR DELETE ON paleositio
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_paleositio_vestigios_view();
+ 
+ 
+---------------------------------------------------------------------------------------------------------------------------------
+-- CREATE MATERILIZED VIEW FOR listagem_jazida AND MAINTENANCE TRIGGERS (convenient for generating tables to share outside SHN) -
+---------------------------------------------------------------------------------------------------------------------------------
+ 
+CREATE MATERIALIZED VIEW listagem_jazida as
+SELECT j.acronimo, 
+       j.matriz, 
+	   j.especies, 
+	   j.vestigios, 
+	   j.folha_cmp, 
+	   j.folha_cgp,  
+	   g.periodo, 
+	   g.epoca, 
+	   g.idade, 
+	   g.litologia, 
+	   g.cod_lito, 
+	   j.toponimo,
+	   m.freguesia,
+	   m.municipio,
+	   j.obs as observacoes, 
+	   j.geom
+FROM jazida AS j JOIN geologia AS g ON j.geologia_oid = g.oid
+                 JOIN municipio_2011 AS m ON j.municipio_2011 = m.oid;
+				 
+ 
+CREATE OR REPLACE FUNCTION refresh_listagem_jazida_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW listagem_jazida;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER listagem_jazida_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+CREATE TRIGGER listagem_jazida_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+CREATE TRIGGER listagem_jazida_3
+AFTER INSERT OR UPDATE OR DELETE ON municipio_2011
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+------------------------------------------------------------------------ 
+-- CREATE MATERILIZED VIEW FOR jazida_websiga AND MAINTENANCE TRIGGERS -
+------------------------------------------------------------------------
+
+CREATE MATERIALIZED VIEW jazida_websigap as
+SELECT j.acronimo, 
+       j.matriz, 
+	   j.especies, 
+	   j.vestigios,
+	   j.data_registo,
+	   j.equipa,
+	   j.dop,
+	   j.num_satelites,
+	   j.cota,
+	   j.precisao,
+	   j.translado,
+	   j.risco,
+	   j.ortofoto_2004,   
+	   j.folha_cmp, 
+	   j.folha_cgp,  
+	   g.periodo, 
+	   g.epoca, 
+	   g.idade, 
+	   g.litologia, 
+	   g.cod_lito, 
+	   j.toponimo,
+	   m.freguesia,
+	   m.municipio,
+	   j.obs as observacoes, 
+	   j.geom
+FROM jazida AS j JOIN geologia AS g ON j.geologia_oid = g.oid
+                 JOIN municipio_2011 AS m ON j.municipio_2011 = m.oid;
+ 
+-------------------------------------------------------------------------
+-- CREATE MATERILIZED VIEW FOR jazida_websigap AND MAINTENANCE TRIGGERS -
+-------------------------------------------------------------------------
+
+CREATE MATERIALIZED VIEW jazida_websigap as
+SELECT j.oid,
+       j.acronimo, 
+       j.matriz, 
+	   j.especies, 
+	   j.vestigios,
+	   j.in_situ,
+	   j.data_registo,
+	   j.equipa,
+	   j.x_coor,
+	   j.y_coor,
+	   j.x_wgs84,
+	   j.y_wgs84,
+	   j.dop,
+	   j.num_satelites,
+	   j.cota,
+	   j.precisao,
+	   j.translado,
+	   j.risco,
+	   j.ortofoto_2004,   
+	   j.folha_cmp, 
+	   j.folha_cgp,  
+	   g.periodo, 
+	   g.epoca, 
+	   g.idade, 
+	   g.litologia, 
+	   g.cod_lito, 
+	   j.toponimo,
+	   m.freguesia,
+	   m.municipio,
+	   j.obs as observacoes, 
+	   j.geom
+FROM jazida AS j JOIN geologia AS g ON j.geologia_oid = g.oid
+                 JOIN municipio_2011 AS m ON j.municipio_2011 = m.oid;
+				 
+
+CREATE OR REPLACE FUNCTION refresh_jazida_websigap_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW jazida_websigap;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER jazida_websigap_1
+AFTER INSERT OR UPDATE OR DELETE ON jazida
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+CREATE TRIGGER jazida_websigap_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+CREATE TRIGGER jazida_websigap_3
+AFTER INSERT OR UPDATE OR DELETE ON municipio_2011
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+---------------------------------------------------------------------------
+-- CREATE MATERILIZED VIEW FOR disperso_websigap AND MAINTENANCE TRIGGERS -
+---------------------------------------------------------------------------
+
+CREATE MATERIALIZED VIEW disperso_websigap as
+SELECT d.oid,
+	   d.acronimo,
+       d.matriz,
+	   d.especies,  
+	   d.vestigios,
+	   d.data_registo,
+	   d.equipa,
+	   d.x_coor_centroid,
+	   d.y_coor_centroid,
+	   d.x_wgs84_centroid,
+	   d.y_wgs84_centroid,
+	   d.area_m2,
+	   d.translado,
+	   d.risco,
+	   d.ortofoto_2004, 
+	   d.folha_cmp,
+	   d.folha_cgp,
+	   g.periodo,
+	   g.epoca,
+	   g.idade,
+	   g.litologia,
+	   g.cod_lito,
+	   d.toponimo,
+	   m.freguesia,
+	   m.municipio,
+	   d.obs as observacoes,
+	   d.geom
+FROM disperso AS d JOIN geologia AS g ON d.geologia_oid = g.oid
+                 JOIN municipio_2011 AS m ON d.municipio_2011 = m.oid;
+
+
+CREATE OR REPLACE FUNCTION refresh_disperso_websigap_view() RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW disperso_websigap;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER disperso_websigap_1
+AFTER INSERT OR UPDATE OR DELETE ON disperso
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+CREATE TRIGGER disperso_websigap_2
+AFTER INSERT OR UPDATE OR DELETE ON geologia
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
+CREATE TRIGGER disperso_websigap_3
+AFTER INSERT OR UPDATE OR DELETE ON municipio_2011
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_jazida_websigap_view();
+
 
 end;
